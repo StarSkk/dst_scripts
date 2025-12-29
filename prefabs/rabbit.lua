@@ -20,6 +20,8 @@ local prefabs =
     "nightmarefuel",
 	"shadow_despawn",
 	"statue_transition_2",
+
+    "rabbitcorpse",
 }
 
 local rabbitsounds =
@@ -319,7 +321,7 @@ local function getincineratesound(inst, doer)
     return (IsForcedNightmare(inst) or IsCrazyGuy(doer)) and beardsounds.scream or inst.sounds.scream
 end
 
-local function drawimageoverride(inst, viewer)
+local function drawimageoverride(inst, canvas, viewer)
     return (IsForcedNightmare(inst) or IsCrazyGuy(viewer)) and "beard_monster"
 end
 

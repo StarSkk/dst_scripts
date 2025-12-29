@@ -98,7 +98,8 @@ local function OnWerenessDelta(parent, data)
     end
 end
 
-local NON_DANGER_TAGS = {"noepicmusic", "shadow", "shadowchesspiece", "smolder", "thorny"}
+-- Keep NON_DANGER_TAGS in sync with dynamicmusic NON_DANGER_TAGS
+local NON_DANGER_TAGS = {"noepicmusic", "shadow", "shadowchesspiece", "smolder", "thorny", "nodangermusic"}
 local function OnAttacked(parent, data)
     parent.player_classified.attackedpulseevent:push()
     parent.player_classified.isattackedbydanger:set(
@@ -212,6 +213,11 @@ end
 --TouchStoneTracker stuff
 local function SetUsedTouchStones(inst, used)
     inst.touchstonetrackerused:set(used)
+end
+
+fns.SetBathingPoolCamera = function(inst, target)
+	inst.bathingpool:set(target)
+	fns.OnBathingPoolDirty(inst)
 end
 
 --------------------------------------------------------------------------
@@ -676,6 +682,12 @@ local function OnIsCarefulWalkingDirty(inst)
     end
 end
 
+local function OnExternalVelocityVectorDirty(inst)
+    if inst._parent then
+        inst._parent.Physics:SetMotorVelExternal(inst.externalvelocityvectorx:value(), 0, inst.externalvelocityvectorz:value())
+    end
+end
+
 local function OnPlayerCameraShake(inst)
     if inst._parent ~= nil and inst._parent.HUD ~= nil then
         TheCamera:Shake(
@@ -703,6 +715,18 @@ fns.OnCannonDirty = function(inst)
     if inst._parent ~= nil then
         inst._parent:PushEvent("aimingcannonchanged", inst.cannon:value())
     end
+end
+
+fns.OnBathingPoolDirty = function(inst)
+	if inst._parent and inst._parent.HUD and inst._oldbathingpool ~= inst.bathingpool:value() then
+		if inst._oldbathingpool then
+			TheFocalPoint.components.focalpoint:StopFocusSource(inst._oldbathingpool)
+		end
+		inst._oldbathingpool = inst.bathingpool:value()
+		if inst._oldbathingpool then
+			TheFocalPoint.components.focalpoint:StartFocusSource(inst._oldbathingpool, nil, nil, math.huge, math.huge, 1)
+		end
+	end
 end
 
 --------------------------------------------------------------------------
@@ -983,6 +1007,8 @@ local function OnWormholeTravelDirty(inst)
             TheFocalPoint.SoundEmitter:PlaySound("dontstarve/cave/tentapiller_hole_travel")
         elseif inst._parent.player_classified.wormholetravelevent:value() == WORMHOLETYPE.OCEANWHIRLPORTAL then
             TheFocalPoint.SoundEmitter:PlaySound("meta3/whirlpool/whirlpool_travel")
+        elseif inst._parent.player_classified.wormholetravelevent:value() == WORMHOLETYPE.VAULTLOBBYEXIT then
+            TheFocalPoint.SoundEmitter:PlaySound("dontstarve/cave/tentapiller_hole_travel") -- FIXME(JBK): rifts6 sounds
         end
     end
 end
@@ -1147,6 +1173,7 @@ local function RegisterNetListeners_local(inst)
     inst:ListenForEvent("pausepredictionframesdirty", OnPausePredictionFramesDirty)
 	inst:ListenForEvent("isstrafingdirty", fns.OnIsStrafingDirty)
     inst:ListenForEvent("iscarefulwalkingdirty", OnIsCarefulWalkingDirty)
+    inst:ListenForEvent("externalvelocityvectordirty", OnExternalVelocityVectorDirty)
     inst:ListenForEvent("isghostmodedirty", OnGhostModeDirty)
     inst:ListenForEvent("actionmeterdirty", OnActionMeterDirty)
     inst:ListenForEvent("playerhuddirty", OnPlayerHUDDirty)
@@ -1154,6 +1181,7 @@ local function RegisterNetListeners_local(inst)
     inst:ListenForEvent("playerscreenflashdirty", OnPlayerScreenFlashDirty)
     inst:ListenForEvent("attunedresurrectordirty", OnAttunedResurrectorDirty)
     inst:ListenForEvent("cannondirty", fns.OnCannonDirty)
+	inst:ListenForEvent("bathingpooldirty", fns.OnBathingPoolDirty)
 end
 
 local function RegisterNetListeners_common(inst)
@@ -1550,7 +1578,10 @@ local function fn()
     inst.externalspeedmultiplier = net_float(inst.GUID, "locomotor.externalspeedmultiplier")
     inst.runspeed:set(TUNING.WILSON_RUN_SPEED)
     inst.externalspeedmultiplier:set(1)
-	inst.busyremoteoverridelocomote = net_bool(inst.GUID, "locomotor.busyremoteoverridelocomote")
+    inst.externalvelocityvectorx = net_float(inst.GUID, "locomotor.externalvelocityvectorx", "externalvelocityvectordirty")
+    inst.externalvelocityvectorz = net_float(inst.GUID, "locomotor.externalvelocityvectorz", "externalvelocityvectordirty")
+	inst.busyremoteoverridelocomote = net_bool(inst.GUID, "locomotor.busyremoteoverridelocomote") --WASD
+	inst.busyremoteoverridelocomoteclick = net_bool(inst.GUID, "locomotor.busyremoteoverridelocomoteclick") --L.click
 	inst.isstrafing = net_bool(inst.GUID, "locomotor.isstrafing", "isstrafingdirty")
 
     --CarefulWalking variables
@@ -1562,6 +1593,9 @@ local function fn()
 	--ChannelCaster variables
 	inst.ischannelcasting = net_bool(inst.GUID, "channelcaster.ishcannelcasting")
 	inst.ischannelcastingitem = net_bool(inst.GUID, "channelcaster.ischannelcastingitem")
+
+	--soakin state (bathingpool) variables
+	inst.bathingpool = net_entity(inst.GUID, "soakin.occupying_bathingpool", "bathingpooldirty")
 
     --Morgue variables
     inst.isdeathbypk = net_bool(inst.GUID, "morgue.isdeathbypk", "morguedirty")
@@ -1595,6 +1629,7 @@ local function fn()
     inst.ShowHUD = fns.ShowHUD
     inst.EnableMapControls = fns.EnableMapControls
     inst.SetOldagerRate = fns.SetOldagerRate
+	inst.SetBathingPoolCamera = fns.SetBathingPoolCamera
 
     inst.persists = false
 

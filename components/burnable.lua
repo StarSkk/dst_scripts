@@ -83,7 +83,7 @@ function Burnable:SetOnIgniteFn(fn)
 end
 
 function Burnable:OnBurnt_Internal()
-    self.inst:RemoveComponent("lunarhailbuildup")
+    RemoveLunarHailBuildup(self.inst)
 end
 
 --- Set the function that will be called when the object has burned completely
@@ -372,7 +372,7 @@ function Burnable:Ignite(immediate, source, doer)
         self.inst:ListenForEvent("death", OnKilled)
         self:SpawnFX(immediate)
 
-        self.inst:PushEvent("onignite", {doer = doer})
+        self.inst:PushEvent("onignite", { source = source, doer = doer })
         if self.onignite ~= nil then
             self.onignite(self.inst, source, doer)
         end

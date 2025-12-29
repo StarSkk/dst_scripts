@@ -35,6 +35,7 @@ local prefabs =
     "minotaur_blood_big",
     "support_pillar_scaffold_blueprint",
     "minotaurchest",
+    "minotaurcorpse",
 }
 
 local prefabs_chest =
@@ -471,7 +472,7 @@ end
 local function checkstunend(inst, data)
     if data ~= nil then
         if data.name == "endstun" then
-            inst:RestartBrain()
+			inst:RestartBrain("SGminotaur_stun")
 			inst:PushEventImmediate("endstun")
         end
     end

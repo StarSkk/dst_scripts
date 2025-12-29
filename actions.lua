@@ -190,6 +190,20 @@ local function ExtraPourWaterDist(doer, dest, bufferedaction)
     return 1.5
 end
 
+-- Small hack, some things (Brightshades) have a lower physics radius override than their actual physics,
+-- This should probably be more encompassing, but let's just fix up this action for now.
+local function ExtraHealRange(doer, dest, bufferedaction)
+    local target = bufferedaction and bufferedaction.target or nil
+    if target then
+        local phys_rad_delta = target:GetPhysicsRadius(0) - target.Physics:GetRadius()
+        if phys_rad_delta < 0 then
+            return math.abs(phys_rad_delta)
+        end
+    end
+    --
+    return 0
+end
+
 local function ArriveAnywhere()
     return true
 end
@@ -316,7 +330,7 @@ ACTIONS =
     HARVEST = Action(),
     GOHOME = Action(),
     SLEEPIN = Action(),
-    CHANGEIN = Action({ priority=-1 }),
+    CHANGEIN = Action({ priority=0 }), -- Must be bigger than RUMMAGE.
     HITCHUP = Action({ priority=-1 }),
     MARK = Action({ distance=2, priority=-1 }),
     UNHITCH = Action({ distance=2, priority=-1 }),
@@ -358,7 +372,7 @@ ACTIONS =
     ACTIVATE = Action({ priority=2, invalid_hold_action = true }),
     OPEN_CRAFTING = Action({priority=2, distance = TUNING.RESEARCH_MACHINE_DIST - 1}),
     MURDER = Action({ priority=1, mount_valid=true }),
-    HEAL = Action({ mount_valid=true }),
+    HEAL = Action({ mount_valid=true, extra_arrive_dist=ExtraHealRange }),
     INVESTIGATE = Action(),
     UNLOCK = Action(),
     USEKLAUSSACKKEY = Action(),
@@ -563,7 +577,7 @@ ACTIONS =
 	APPLYMODULE_FAIL = Action({ mount_valid=true, instant = true }),
     REMOVEMODULES = Action({ mount_valid=true }),
 	REMOVEMODULES_FAIL = Action({ mount_valid=true, instant = true }),
-    CHARGE_FROM = Action({ mount_valid=false }),
+    CHARGE_FROM = Action({ distance=1.25, mount_valid=false }),
 
     ROTATE_FENCE = Action({ rmb=true }),
 
@@ -620,11 +634,15 @@ ACTIONS =
 	-- Rifts 5
 	POUNCECAPTURE = Action({ priority = 3, distance = 5, canforce = true, rangecheckfn = MakeRangeCheckFn(7) }),
 
-    -- electrocute
+    -- rifts5.1
     DIVEGRAB = Action({ priority = 3, distance = 5, canforce = true, rangecheckfn = MakeRangeCheckFn(7) }),
     STARTELECTRICLINK = Action({ priority = 2, invalid_hold_action = true  }),
     ENDELECTRICLINK = Action({ priority = 1, invalid_hold_action = true }),
     REMOVELUNARBUILDUP = Action({priority=3, invalid_hold_action=true}),
+
+	-- Winter 2025
+	SOAKIN = Action({ invalid_hold_action = true }),
+    TRANSFER_CRITTER = Action({ invalid_hold_action = true }),
 }
 
 ACTIONS_BY_ACTION_CODE = {}
@@ -663,6 +681,11 @@ ACTIONS.APPRAISE.fn = function(act)
     elseif reason == "NOTNOW" then
         return false, "NOTNOW"
     end
+end
+
+ACTIONS.EAT.strfn = function(act)
+    return (act.invobject ~= nil and act.invobject:HasTag("fooddrink")) and "DRINK"
+        or nil
 end
 
 ACTIONS.EAT.fn = function(act)
@@ -1038,10 +1061,15 @@ local function ShouldLOOKATStopLocomotor(act)
 end
 
 ACTIONS.LOOKAT.strfn = function(act)
-	return act.invobject == nil
-		and CLOSEINSPECTORUTIL.CanCloseInspect(act.doer, act.target or act:GetActionPoint())
-		and "CLOSEINSPECT"
-		or nil
+	if act.invobject == nil and CLOSEINSPECTORUTIL.CanCloseInspect(act.doer, act.target or act:GetActionPoint()) then
+		return "CLOSEINSPECT"
+	end
+	if act.target and act.target:HasTag("ancient_text") then
+		local inventory = act.doer and act.doer.replica.inventory
+		if inventory and inventory:EquipHasTag("ancient_reader") then
+			return "READ"
+		end
+	end
 end
 
 ACTIONS.LOOKAT.fn = function(act)
@@ -1510,7 +1538,7 @@ local function DoToolWork(act, workaction)
         act.target.components.workable:GetWorkAction() == workaction and
         (act.invobject == nil or act.doer == nil or act.invobject.components.equippable == nil or not act.invobject.components.equippable:IsRestricted(act.doer))
     then
-        if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject and act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -1538,7 +1566,7 @@ local function DoToolWork(act, workaction)
 		end
 
 		if recoil and act.doer.sg ~= nil and act.doer.sg.statemem.recoilstate ~= nil then
-			act.doer.sg:GoToState(act.doer.sg.statemem.recoilstate, { target = act.target })
+            act.doer:PushEventImmediate("recoil_off", { target = act.target } )
 			if numworks == 0 then
 				act.doer:PushEvent("tooltooweak", { workaction = workaction })
 			end
@@ -1746,6 +1774,9 @@ end
 ACTIONS.PICK.fn = function(act)
     if act.target ~= nil then
         if act.target.components.pickable ~= nil then
+			if act.target.components.pickable:IsStuck() then
+				return false, "STUCK"
+			end
             act.target.components.pickable:Pick(act.doer)
             return true
         elseif act.target.components.searchable ~= nil then
@@ -1785,6 +1816,8 @@ ACTIONS.ATTACK.fn = function(act)
                 and weapon.components.helmsplitter:StartHelmSplitting(act.doer)
         end
     end
+
+    --NOTE: Recoil logic done in combat.lua instead of here
     act.doer.components.combat:DoAttack(act.target)
     return true
 end
@@ -2024,6 +2057,7 @@ ACTIONS.GIVE.strfn = function(act)
     return act.target ~= nil
         and ((act.target:HasTag("gemsocket") and "SOCKET") or
             (act.target:HasTag("trader_just_show") and "SHOW")or
+			(act.target:HasTag("trader_repair") and "REPAIR") or
             (act.target:HasTag("moontrader") and "CELESTIAL"))
         or nil
 end
@@ -2033,9 +2067,11 @@ ACTIONS.GIVE.stroverridefn = function(act)
     if act.target ~= nil and act.invobject ~= nil then
 		if act.target:HasTag("ghostlyelixirable") and act.invobject:HasTag("ghostlyelixir") then
 			return subfmt(STRINGS.ACTIONS.GIVE.APPLY, { item = act.invobject:GetBasicDisplayName() })
-		elseif act.target:HasTag("wintersfeasttable") then
-			return subfmt(STRINGS.ACTIONS.GIVE.PLACE_ITEM, { item = act.invobject:GetBasicDisplayName() })
-		elseif act.target:HasTag("inventoryitemholder_give") then
+		elseif act.target:HasAnyTag(
+				"wintersfeasttable",
+				"inventoryitemholder_give",
+				"furnituredecortaker")
+		then
 			return subfmt(STRINGS.ACTIONS.GIVE.PLACE_ITEM, { item = act.invobject:GetBasicDisplayName() })
         elseif act.target.nameoverride ~= nil and act.invobject:HasTag("quagmire_stewer") then
             return subfmt(STRINGS.ACTIONS.GIVE[string.upper(act.target.nameoverride)], { item = act.invobject:GetBasicDisplayName() })
@@ -2446,6 +2482,14 @@ ACTIONS.HARVEST.fn = function(act)
         return act.target.components.stewer:Harvest(act.doer)
     elseif act.target.components.dryer ~= nil then
         return act.target.components.dryer:Harvest(act.doer)
+    elseif act.target.components.dryingrack ~= nil and act.invobject and act.target.components.container ~= nil then
+        local targetitem = act.target.components.container:RemoveItem(act.invobject)
+        if targetitem ~= nil then
+            targetitem.prevcontainer = nil
+            targetitem.prevslot = nil
+            act.doer.components.inventory:GiveItem(targetitem)
+            return true
+        end
     elseif act.target.components.occupiable ~= nil and act.target.components.occupiable:IsOccupied() then
         local item = act.target.components.occupiable:Harvest(act.doer)
         if item ~= nil then
@@ -3187,7 +3231,7 @@ ACTIONS.CASTSPELL.fn = function(act)
     local staff = act.invobject or act.doer.components.inventory:GetEquippedItem(EQUIPSLOTS.HANDS)
 	local act_pos = act:GetActionPoint()
     if staff and staff.components.spellcaster then
-        if staff.components.itemmimic and staff.components.itemmimic.fail_as_invobject then
+        if staff.components.itemmimic then
             return false, "ITEMMIMIC"
         end
         if staff:HasTag("crushitemcast") then
@@ -3307,8 +3351,7 @@ end
 ACTIONS.BLINK.fn = function(act)
 	local act_pos = act:GetActionPoint()
     if act.invobject ~= nil then
-        if act.invobject.components.itemmimic and
-                act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
         if act.invobject.components.blinkstaff ~= nil then
@@ -3498,8 +3541,7 @@ end
 
 ACTIONS.FEED.fn = function(act)
     if act.invobject and
-            act.invobject.components.itemmimic and
-            act.invobject.components.itemmimic.fail_as_invobject then
+            act.invobject.components.itemmimic then
         return false, "ITEMMIMIC"
     end
 
@@ -3675,8 +3717,7 @@ end
 
 ACTIONS.FAN.fn = function(act)
     if act.invobject ~= nil and act.invobject.components.fan ~= nil then
-        if act.invobject.components.itemmimic and
-                act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -3712,8 +3753,7 @@ ACTIONS.TOSS.fn = function(act)
         return nil
     end
 
-    if projectile.components.itemmimic and
-            projectile.components.itemmimic.fail_as_invobject then
+    if projectile.components.itemmimic then
         return false, "ITEMMIMIC"
     end
 
@@ -3911,8 +3951,7 @@ ACTIONS.SADDLE.fn = function(act)
         return false, "TARGETINCOMBAT"
     elseif act.target.components.health ~= nil and act.target.components.health:IsDead() then
         return false
-    elseif act.invobject and act.invobject.components.itemmimic
-            and act.invobject.components.itemmimic.fail_as_invobject then
+    elseif act.invobject and act.invobject.components.itemmimic then
         return false, "ITEMMIMIC"
     elseif act.target.components.rideable ~= nil then
         --V2C: currently, rideable component implies saddleable always
@@ -3928,8 +3967,7 @@ ACTIONS.UNSADDLE.fn = function(act)
         return false, "TARGETINCOMBAT"
     elseif act.target.components.health ~= nil and act.target.components.health:IsDead() then
         return false
-    elseif act.invobject and act.invobject.components.itemmimic
-            and act.invobject.components.itemmimic.fail_as_invobject then
+    elseif act.invobject and act.invobject.components.itemmimic then
         return false, "ITEMMIMIC"
     elseif act.target.components.rideable ~= nil then
         --V2C: currently, rideable component implies saddleable always
@@ -3944,8 +3982,7 @@ ACTIONS.BRUSH.fn = function(act)
         return false, "TARGETINCOMBAT"
     elseif act.target.components.health ~= nil and act.target.components.health:IsDead() then
         return false
-    elseif act.invobject and act.invobject.components.itemmimic
-            and act.invobject.components.itemmimic.fail_as_invobject then
+    elseif act.invobject and act.invobject.components.itemmimic then
         return false, "ITEMMIMIC"
     elseif act.target.components.brushable ~= nil then
         act.target.components.brushable:Brush(act.doer, act.invobject)
@@ -4023,7 +4060,7 @@ ACTIONS.DRAW.fn = function(act)
             act.invobject.components.drawingtool ~= nil and
             act.target.components.drawable ~= nil and
             act.target.components.drawable:CanDraw() then
-        local image, src, atlas, bgimage, bgatlas = act.invobject.components.drawingtool:GetImageToDraw(act.target)
+        local image, src, atlas, bgimage, bgatlas = act.invobject.components.drawingtool:GetImageToDraw(act.target, act.doer)
         if image == nil then
             return false, "NOIMAGE"
         end
@@ -4057,7 +4094,7 @@ ACTIONS.START_CHANNELCAST.fn = function(act)
 			--off-hand channel casting
 			return act.doer.components.channelcaster:StartChanneling()
 		elseif act.invobject.components.channelcastable and not act.invobject.components.channelcastable:IsAnyUserChanneling() then
-            if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+            if act.invobject.components.itemmimic then
                 return false, "ITEMMIMIC"
             end
 			--equipped item channel casting
@@ -4074,7 +4111,7 @@ ACTIONS.STOP_CHANNELCAST.fn = function(act)
 		act.invobject.components.channelcastable and
 		act.invobject.components.channelcastable:IsUserChanneling(act.doer)
 	then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 		act.invobject.components.channelcastable:StopChanneling()
@@ -4273,7 +4310,7 @@ end
 ACTIONS.CASTAOE.fn = function(act)
 	local act_pos = act:GetActionPoint()
     if act.invobject ~= nil and act.invobject.components.aoespell ~= nil and act.invobject.components.aoespell:CanCast(act.doer, act_pos) then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 		return act.invobject.components.aoespell:CastSpell(act.doer, act_pos)
@@ -4282,7 +4319,7 @@ end
 
 ACTIONS.SCYTHE.fn = function(act)
     if act.invobject ~= nil and act.invobject.DoScythe then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
         act.invobject:DoScythe(act.target, act.doer)
@@ -4294,7 +4331,7 @@ end
 
 ACTIONS.NABBAG.fn = function(act)
     if act.doer and act.doer.components.inventory and act.invobject and act.invobject.components.nabbag then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -4449,7 +4486,7 @@ end
 
 ACTIONS.TILL.fn = function(act)
     if act.invobject ~= nil then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -4690,7 +4727,7 @@ end
 
 ACTIONS.CAST_NET.fn = function(act)
     if act.invobject and act.invobject.components.fishingnet then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -4927,7 +4964,7 @@ end
 
 ACTIONS.OCEAN_TOSS.fn = function(act)
     if act.invobject and act.doer then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5150,7 +5187,7 @@ end
 
 ACTIONS.POUR_WATER.fn = function(act)
     if act.invobject ~= nil and act.invobject:IsValid() then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5180,7 +5217,7 @@ end
 ACTIONS.PLANTREGISTRY_RESEARCH_FAIL.fn = function(act)
     local targ = act.target or act.invobject
     if targ then
-        if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject and act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5196,7 +5233,7 @@ ACTIONS.PLANTREGISTRY_RESEARCH.fn = function(act)
     local targ = act.target or act.invobject
 
     if targ ~= nil then
-        if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject and act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5235,7 +5272,7 @@ ACTIONS.ASSESSPLANTHAPPINESS.fn = function(act)
     local targ = act.target or act.invobject
 
     if targ ~= nil then
-        if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject and act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5281,7 +5318,7 @@ end
 
 ACTIONS.WAX.fn = function(act)
     if act.target.components.waxable then
-        if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject and act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
         return act.target.components.waxable:Wax(act.doer, act.invobject)
@@ -5437,7 +5474,7 @@ end
 ACTIONS.LIFT_DUMBBELL.fn = function(act)
     local dumbbell = act.invobject
     if act.doer ~= nil and dumbbell ~= nil then
-        if dumbbell.components.itemmimic and dumbbell.components.itemmimic.fail_as_invobject then
+        if dumbbell.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5577,18 +5614,33 @@ ACTIONS.REMOVEMODULES_FAIL.stroverridefn = function(act)
     return STRINGS.ACTIONS.REMOVEMODULES
 end
 
+ACTIONS.CHARGE_FROM.strfn = function(act)
+    return act.invobject and act.invobject:HasTag("batteryuser") and "ITEM"
+        or act.doer and act.doer:HasTag("batteryuser") and "SELF"
+        or nil
+end
+
 ACTIONS.CHARGE_FROM.fn = function(act)
-    if (act.target ~= nil and act.target.components.battery ~= nil) and
-            (act.doer ~= nil and act.doer.components.batteryuser ~= nil) then
-        return act.doer.components.batteryuser:ChargeFrom(act.target)
-    else
+    if not act.target or act.target.components.battery == nil then
         return false
     end
+
+    local user
+    if act.invobject and act.invobject.components.batteryuser then
+        user = act.invobject
+    elseif act.doer and act.doer.components.batteryuser then
+        user = act.doer
+    end
+    if not user then
+        return false
+    end
+
+    return user.components.batteryuser:ChargeFrom(act.target)
 end
 
 ACTIONS.ROTATE_FENCE.fn = function(act)
     if act.invobject ~= nil then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5604,7 +5656,7 @@ end
 
 ACTIONS.USEMAGICTOOL.fn = function(act)
 	if act.doer.components.magician ~= nil then
-        if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject and act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 		return act.doer.components.magician:StartUsingTool(act.invobject)
@@ -5744,7 +5796,7 @@ end
 
 ACTIONS.REMOTE_TELEPORT.fn = function(act)
 	if act.invobject and act.invobject.components.remoteteleporter then
-        if act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+        if act.invobject.components.itemmimic then
             return false, "ITEMMIMIC"
         end
 
@@ -5771,17 +5823,37 @@ ACTIONS.BOTTLE.fn = function(act)
 end
 
 ACTIONS.CARVEPUMPKIN.fn = function(act)
-	if act.doer and act.target and act.target.components.pumpkincarvable then
-		local success, reason = act.target.components.pumpkincarvable:CanBeginCarving(act.doer)
-		if not success then
-			return false, reason
-		end
+	if act.doer and act.target then
+		local pumpkincarvable = act.target.components.pumpkincarvable or act.target.components.pumpkinhatcarvable
+		if pumpkincarvable then
+			--V2C: for searching =>
+			--  pumpkinhatcarvable:CanBeginCarving(act.doer)
+			--  pumpkinhatcarvable:BeginCarving(act.doer, act.target)
+			local success, reason = pumpkincarvable:CanBeginCarving(act.doer)
+			if not success then
+				return false, reason
+			end
 
-		--Silent fail for carving in the dark
-		if CanEntitySeeTarget(act.doer, act.target) then
-			act.target.components.pumpkincarvable:BeginCarving(act.doer)
+			--Silent fail for carving in the dark
+			if CanEntitySeeTarget(act.doer, act.target) then
+				local owner = act.target.components.inventoryitem and act.target.components.inventoryitem.owner
+				if owner then
+					local grandowner = act.target.components.inventoryitem:GetGrandOwner()
+					if grandowner ~= act.doer and grandowner.components.inventory then
+						return false --someone else holding it?!
+					end
+					local inventory = owner.components.inventory or owner.components.container
+					if inventory then
+						inventory:DropItem(act.target)
+					end
+					if act.target.components.inventoryitem:IsHeld() then
+						return false --failed to drop?!?!
+					end
+				end
+				pumpkincarvable:BeginCarving(act.doer)
+			end
+			return true
 		end
-		return true
 	end
 end
 
@@ -6266,7 +6338,13 @@ end
 ACTIONS.POUNCECAPTURE.fn = function(act)
 	local cage = act.invobject
 	if cage and cage.components.gestaltcage then
-		return cage.components.gestaltcage:Capture(act.target, act.doer)
+        if cage.components.itemmimic then
+            return false, "ITEMMIMIC"
+        end
+
+        if act.target then
+			return cage.components.gestaltcage:Capture(act.target, act.doer)
+        end
 	end
 	return false
 end
@@ -6274,7 +6352,13 @@ end
 ACTIONS.DIVEGRAB.fn = function(act)
     local catcher = act.invobject
     if catcher and catcher.components.moonstormstaticcatcher then
-        return catcher.components.moonstormstaticcatcher:Catch(act.target, act.doer)
+        if catcher.components.itemmimic then
+            return false, "ITEMMIMIC"
+        end
+
+        if act.target then
+            return catcher.components.moonstormstaticcatcher:Catch(act.target, act.doer)
+        end
     end
     return false
 end
@@ -6307,7 +6391,7 @@ ACTIONS.REMOVELUNARBUILDUP.fn = function(act)
         return false
     end
 
-    if act.invobject and act.invobject.components.itemmimic and act.invobject.components.itemmimic.fail_as_invobject then
+    if act.invobject and act.invobject.components.itemmimic then
         return false, "ITEMMIMIC"
     end
 
@@ -6323,4 +6407,30 @@ ACTIONS.REMOVELUNARBUILDUP.validfn = function(act)
         return false
     end
     return (act.invobject == nil or act.doer == nil or act.invobject.components.equippable == nil or not act.invobject.components.equippable:IsRestricted(act.doer))
+end
+
+ACTIONS.SOAKIN.fn = function(act)
+	if act.target and act.target.components.bathingpool then
+		return act.target.components.bathingpool:EnterPool(act.doer)
+	end
+end
+
+local HERMITCRAB_MUST_TAGS = { "hermitcrab", "character" }
+ACTIONS.TRANSFER_CRITTER.fn = function(act)
+    if act.doer.components.petleash ~= nil and act.target.components.crittertraits ~= nil then
+        local hermitcrab = FindEntity(act.doer, 10, nil, HERMITCRAB_MUST_TAGS)
+        if not hermitcrab or hermitcrab.components.petleash == nil then
+            return false
+        elseif hermitcrab.components.petleash:IsFull() then
+            return false--, "FULL"
+        end
+
+        act.doer.components.petleash:DetachPet(act.target)
+        hermitcrab.components.petleash:AttachPet(act.target)
+        act.target.components.crittertraits:OnPet(act.doer)
+
+        hermitcrab:PushEvent("adopted_critter", { critter = act.target })
+
+        return true
+    end
 end

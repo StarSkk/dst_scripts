@@ -173,16 +173,20 @@ end
 
 local function OnSave(inst, data)
     data.structuresDestroyed = inst.structuresDestroyed
-	data.looted = inst.looted
 end
 
 local function OnLoad(inst, data)
     if data then
         inst.structuresDestroyed = data.structuresDestroyed or inst.structuresDestroyed
-		inst.looted = data.looted
-		if inst.looted ~= nil and inst.components.health:IsDead() then
-			inst.sg:GoToState("corpse", true)
-		end
+
+        -- Deprecated, kept for old saves
+        inst.looted = data.looted
+        if inst.looted then
+            inst:SetDeathLootLevel(inst.looted)
+            if inst.components.health:IsDead() then
+			    inst.sg:GoToState("corpse")
+		    end
+        end
     end
 end
 
@@ -426,7 +430,6 @@ local function commonfn(build, commonfn)
     ------------------
 
     inst:AddComponent("health")
-	inst.components.health.nofadeout = true
 
     ------------------
 
@@ -511,6 +514,8 @@ local function normalfn()
 	inst.components.sleeper:SetWakeTest(ShouldWake)
 
 	MakeHugeFreezableCharacter(inst, "deerclops_body")
+
+    inst.spawn_gestalt_mutated_tuning = "SPAWN_MUTATED_DEERCLOPS"
 
     if yule then
 		inst.yule = true
@@ -617,6 +622,7 @@ end
 
 local function mutatedcommonfn(inst)
     inst:AddTag("lunar_aligned")
+    inst:AddTag("gestaltmutant")
 	inst:AddTag("noepicmusic")
 	inst:AddTag("soulless") -- no wortox souls
 
@@ -661,6 +667,8 @@ local function mutatedfn()
 	inst.hasfrenzy = true
 	inst.freezepower = 3
 	inst.ignorebase = true
+
+    inst.sg.mem.nocorpse = true
 
     inst:AddComponent("timer")
 
